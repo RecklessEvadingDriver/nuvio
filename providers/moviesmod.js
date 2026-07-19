@@ -1,5 +1,5 @@
 /**
- * moviesmod — built 2026-07-19T07:43:29.495Z
+ * moviesmod — built 2026-07-19T07:44:11.681Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -250,6 +250,92 @@ var decodeId = (postId) => {
 };
 var encodeUrl = (url) => crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, "");
 var isHttpUrl = (value = "") => /^https?:\/\//i.test((value || "").trim());
+var normalizeImdbId = (value = "") => {
+  const match = String(value).trim().match(/(?:imdb[:\s/-]*)?(tt\d{5,})/i);
+  return match ? match[1].toLowerCase() : null;
+};
+var normalizeTmdbId = (value = "") => {
+  const raw = String(value).trim();
+  if (!raw)
+    return null;
+  const cleaned = raw.replace(/^tmdb[:\s/-]*/i, "");
+  return /^\d{1,12}$/.test(cleaned) ? cleaned : null;
+};
+var buildLookupTerms = (postRef) => {
+  const terms = /* @__PURE__ */ new Set();
+  const add = (v) => {
+    const imdb = normalizeImdbId(v);
+    if (imdb)
+      terms.add(imdb);
+    const tmdb = normalizeTmdbId(v);
+    if (tmdb)
+      terms.add(tmdb);
+  };
+  if (postRef && typeof postRef === "object") {
+    add(postRef.imdbId);
+    add(postRef.tmdbId);
+    add(postRef.imdb);
+    add(postRef.tmdb);
+    add(postRef.id);
+  } else {
+    add(postRef);
+  }
+  return Array.from(terms);
+};
+function findPostUrlByLookupTerm(term) {
+  return __async(this, null, function* () {
+    const { html } = yield getHTML(`${BASE}/?s=${encodeURIComponent(term)}`);
+    const $ = cheerio.load(html);
+    const results = [];
+    $("article").each((_, el) => {
+      const article = $(el);
+      const href = article.find("a[href]").first().attr("href");
+      if (!href)
+        return;
+      let postUrl;
+      try {
+        postUrl = new URL(href, BASE).toString();
+      } catch (e) {
+        return;
+      }
+      const title = article.find(".entry-title").text().trim();
+      const snippet = article.text().replace(/\s+/g, " ").trim();
+      const haystack = `${title} ${snippet} ${postUrl}`.toLowerCase();
+      let score = 0;
+      if (haystack.includes(term.toLowerCase()))
+        score += 5;
+      if (title.toLowerCase().includes(term.toLowerCase()))
+        score += 3;
+      results.push({ postUrl: postUrl.replace(/\/+$/, ""), score });
+    });
+    if (!results.length)
+      return null;
+    results.sort((a, b) => b.score - a.score);
+    return results[0].postUrl;
+  });
+}
+function resolvePostRef(postRef) {
+  return __async(this, null, function* () {
+    const normalized = normalizePostRef(postRef);
+    if (normalized.url)
+      return normalized;
+    const lookupTerms = buildLookupTerms(postRef);
+    for (const term of lookupTerms) {
+      try {
+        const postUrl = yield findPostUrlByLookupTerm(term);
+        if (!postUrl)
+          continue;
+        return {
+          cacheKey: `lookup:${term}`,
+          url: postUrl,
+          id: encodeUrl(postUrl)
+        };
+      } catch (_) {
+      }
+    }
+    return normalized;
+  });
+}
 var normalizePostRef = (postRef) => {
   var _a, _b, _c;
   if (postRef && typeof postRef === "object") {
@@ -390,7 +476,7 @@ function getPosts(filter, page = 1) {
 }
 function getMeta(postRef) {
   return __async(this, null, function* () {
-    const ref = normalizePostRef(postRef);
+    const ref = yield resolvePostRef(postRef);
     const cached = get(cache.meta, ref.cacheKey);
     if (cached)
       return cached;
@@ -453,7 +539,7 @@ function detectHost(url) {
 }
 function getStreams(postRef) {
   return __async(this, null, function* () {
-    const ref = normalizePostRef(postRef);
+    const ref = yield resolvePostRef(postRef);
     const cached = get(cache.streams, ref.cacheKey);
     if (cached)
       return cached;

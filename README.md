@@ -57,5 +57,9 @@ manifest.json                    # provider registry
 
 All async. Nuvio awaits them.
 
-`postIdOrUrl` can be a base64 `postId`, a direct post URL, or an object containing
-`postId`, `id`, `url`, or `href`.
+`postIdOrUrl` can be:
+- base64 `postId`
+- direct post URL
+- IMDb id (for example `tt1234567` or `{ imdbId: "tt1234567" }`)
+- TMDB id (for example `12345` or `{ tmdbId: "12345" }`)
+- object containing `postId`, `id`, `url`, or `href`
