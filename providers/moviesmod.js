@@ -1,5 +1,5 @@
 /**
- * moviesmod — built 2026-07-19T07:32:53.376Z
+ * moviesmod — built 2026-07-19T07:44:11.681Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -249,6 +249,112 @@ var decodeId = (postId) => {
   }
 };
 var encodeUrl = (url) => crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, "");
+var isHttpUrl = (value = "") => /^https?:\/\//i.test((value || "").trim());
+var normalizeImdbId = (value = "") => {
+  const match = String(value).trim().match(/(?:imdb[:\s/-]*)?(tt\d{5,})/i);
+  return match ? match[1].toLowerCase() : null;
+};
+var normalizeTmdbId = (value = "") => {
+  const raw = String(value).trim();
+  if (!raw)
+    return null;
+  const cleaned = raw.replace(/^tmdb[:\s/-]*/i, "");
+  return /^\d{1,12}$/.test(cleaned) ? cleaned : null;
+};
+var buildLookupTerms = (postRef) => {
+  const terms = /* @__PURE__ */ new Set();
+  const add = (v) => {
+    const imdb = normalizeImdbId(v);
+    if (imdb)
+      terms.add(imdb);
+    const tmdb = normalizeTmdbId(v);
+    if (tmdb)
+      terms.add(tmdb);
+  };
+  if (postRef && typeof postRef === "object") {
+    add(postRef.imdbId);
+    add(postRef.tmdbId);
+    add(postRef.imdb);
+    add(postRef.tmdb);
+    add(postRef.id);
+  } else {
+    add(postRef);
+  }
+  return Array.from(terms);
+};
+function findPostUrlByLookupTerm(term) {
+  return __async(this, null, function* () {
+    const { html } = yield getHTML(`${BASE}/?s=${encodeURIComponent(term)}`);
+    const $ = cheerio.load(html);
+    const results = [];
+    $("article").each((_, el) => {
+      const article = $(el);
+      const href = article.find("a[href]").first().attr("href");
+      if (!href)
+        return;
+      let postUrl;
+      try {
+        postUrl = new URL(href, BASE).toString();
+      } catch (e) {
+        return;
+      }
+      const title = article.find(".entry-title").text().trim();
+      const snippet = article.text().replace(/\s+/g, " ").trim();
+      const haystack = `${title} ${snippet} ${postUrl}`.toLowerCase();
+      let score = 0;
+      if (haystack.includes(term.toLowerCase()))
+        score += 5;
+      if (title.toLowerCase().includes(term.toLowerCase()))
+        score += 3;
+      results.push({ postUrl: postUrl.replace(/\/+$/, ""), score });
+    });
+    if (!results.length)
+      return null;
+    results.sort((a, b) => b.score - a.score);
+    return results[0].postUrl;
+  });
+}
+function resolvePostRef(postRef) {
+  return __async(this, null, function* () {
+    const normalized = normalizePostRef(postRef);
+    if (normalized.url)
+      return normalized;
+    const lookupTerms = buildLookupTerms(postRef);
+    for (const term of lookupTerms) {
+      try {
+        const postUrl = yield findPostUrlByLookupTerm(term);
+        if (!postUrl)
+          continue;
+        return {
+          cacheKey: `lookup:${term}`,
+          url: postUrl,
+          id: encodeUrl(postUrl)
+        };
+      } catch (_) {
+      }
+    }
+    return normalized;
+  });
+}
+var normalizePostRef = (postRef) => {
+  var _a, _b, _c;
+  if (postRef && typeof postRef === "object") {
+    return normalizePostRef((_c = (_b = (_a = postRef.postId) != null ? _a : postRef.id) != null ? _b : postRef.url) != null ? _c : postRef.href);
+  }
+  const raw = typeof postRef === "string" ? postRef.trim() : "";
+  if (!raw)
+    return { cacheKey: "empty", url: null, id: null };
+  if (isHttpUrl(raw)) {
+    const url = raw.replace(/\/+$/, "");
+    return { cacheKey: `url:${url}`, url, id: encodeUrl(url) };
+  }
+  const decoded = decodeId(raw);
+  if (decoded && isHttpUrl(decoded)) {
+    const url = decoded.replace(/\/+$/, "");
+    return { cacheKey: `id:${raw}`, url, id: raw };
+  }
+  return { cacheKey: `raw:${raw}`, url: null, id: raw };
+};
 var inferType = (text = "") => /\bseason\b|\bepisode\b|\bs\d{1,2}\b|\bseries\b|\btv\b/i.test(text) ? "series" : "movie";
 function getHTML(url) {
   return __async(this, null, function* () {
@@ -368,15 +474,15 @@ function getPosts(filter, page = 1) {
     return { posts, nextPage: posts.length > 0 && hasNext ? page + 1 : void 0 };
   });
 }
-function getMeta(postId) {
+function getMeta(postRef) {
   return __async(this, null, function* () {
-    const cached = get(cache.meta, postId);
+    const ref = yield resolvePostRef(postRef);
+    const cached = get(cache.meta, ref.cacheKey);
     if (cached)
       return cached;
-    const url = decodeId(postId);
-    if (!url)
+    if (!ref.url)
       throw new Error("bad postId");
-    const { html } = yield getHTML(url);
+    const { html } = yield getHTML(ref.url);
     const $ = cheerio.load(html);
     const title = $("h1.entry-title, h1").first().text().trim() || $("title").text().split("\u2014")[0].trim();
     const poster = $('meta[property="og:image"]').attr("content") || $(".entry-content img").first().attr("src");
@@ -388,14 +494,14 @@ function getMeta(postId) {
     const isSeries = /\bseason\b|\bepisode\b/i.test($(".entry-content").text() || "");
     const type = isSeries ? "series" : "movie";
     const meta = {
-      id: postId,
+      id: ref.id || postRef,
       type,
       title,
       poster: poster || void 0,
       description: desc || void 0,
       year
     };
-    set(cache.meta, postId, meta);
+    set(cache.meta, ref.cacheKey, meta);
     return meta;
   });
 }
@@ -431,15 +537,15 @@ function detectHost(url) {
     return "Unknown";
   }
 }
-function getStreams(postId) {
+function getStreams(postRef) {
   return __async(this, null, function* () {
-    const cached = get(cache.streams, postId);
+    const ref = yield resolvePostRef(postRef);
+    const cached = get(cache.streams, ref.cacheKey);
     if (cached)
       return cached;
-    const url = decodeId(postId);
-    if (!url)
+    if (!ref.url)
       return [];
-    const { html } = yield getHTML(url);
+    const { html } = yield getHTML(ref.url);
     const $ = cheerio.load(html);
     const candidateMap = /* @__PURE__ */ new Map();
     const addCandidate = (href, label) => {
@@ -447,7 +553,7 @@ function getStreams(postId) {
         return;
       let absolute;
       try {
-        absolute = new URL(href, url).toString();
+        absolute = new URL(href, ref.url).toString();
       } catch (e) {
         return;
       }
@@ -503,7 +609,7 @@ function getStreams(postId) {
       seen.add(s.url);
       return true;
     });
-    set(cache.streams, postId, streams);
+    set(cache.streams, ref.cacheKey, streams);
     return streams;
   });
 }
