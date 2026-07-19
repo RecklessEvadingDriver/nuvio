@@ -39,6 +39,9 @@ const decodeId = (postId) => {
 const encodeUrl = (url) =>
   crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, '');
 
+const inferType = (text = '') =>
+  /\bseason\b|\bepisode\b|\bs\d{1,2}\b|\bseries\b|\btv\b/i.test(text) ? 'series' : 'movie';
+
 async function getHTML(url) {
   const r = await fetch(url, { headers: HEADERS(url), redirect: 'follow' });
   if (!r.ok) throw new Error(`HTTP ${r.status} on ${url}`);
@@ -52,10 +55,10 @@ async function getCatalog() {
   if (cached) return cached;
 
   const fallback = [
-    { id: 'moviesmod-trending', title: 'MoviesMod — Trending', filter: 'trending' },
-    { id: 'moviesmod-latest', title: 'MoviesMod — Latest', filter: 'latest' },
-    { id: 'moviesmod-hollywood', title: 'MoviesMod — Hollywood', filter: '/category/hollywood-movies/' },
-    { id: 'moviesmod-bollywood', title: 'MoviesMod — Bollywood', filter: '/category/bollywood-movies/' },
+    { id: 'moviesmod-trending', title: 'Trending', filter: 'trending', type: 'movie' },
+    { id: 'moviesmod-latest', title: 'Latest', filter: 'latest', type: 'movie' },
+    { id: 'moviesmod-hollywood', title: 'Hollywood Movies', filter: '/category/hollywood-movies/', type: 'movie' },
+    { id: 'moviesmod-bollywood', title: 'Bollywood Movies', filter: '/category/bollywood-movies/', type: 'movie' },
   ];
 
   try {
@@ -84,14 +87,15 @@ async function getCatalog() {
 
       dynamic.push({
         id: `moviesmod-${slug}`,
-        title: `MoviesMod — ${rawTitle}`,
+        title: rawTitle,
         filter,
+        type: inferType(rawTitle),
       });
     });
 
     const catalog = [
-      { id: 'moviesmod-trending', title: 'MoviesMod — Trending', filter: 'trending' },
-      { id: 'moviesmod-latest', title: 'MoviesMod — Latest', filter: 'latest' },
+      { id: 'moviesmod-trending', title: 'Trending', filter: 'trending', type: 'movie' },
+      { id: 'moviesmod-latest', title: 'Latest', filter: 'latest', type: 'movie' },
       ...dynamic,
     ];
 
@@ -136,6 +140,9 @@ async function getPosts(filter, page = 1) {
     const a = $(el).find('a').first();
     const href = a.attr('href');
     if (!href) return;
+    let postUrl;
+    try { postUrl = new URL(href, BASE).toString(); }
+    catch { return; }
     const title = $(el).find('.entry-title').text().trim()
                || a.attr('title')?.trim()
                || a.text().trim();
@@ -143,8 +150,8 @@ async function getPosts(filter, page = 1) {
                 || $(el).find('img').attr('data-src');
     if (!title) return;
     posts.push({
-      id: encodeUrl(href),
-      type: 'movie',
+      id: encodeUrl(postUrl),
+      type: inferType(title),
       title,
       poster: poster || undefined,
     });
@@ -227,14 +234,32 @@ async function getStreams(postId) {
   const $ = cheerio.load(html);
 
   // Gather every candidate link inside the post body
-  const candidates = [];
-  $('.entry-content a[href]').each((_, el) => {
-    const href = $(el).attr('href');
+  const candidateMap = new Map();
+  const addCandidate = (href, label) => {
     if (!href) return;
-    if (!/^https?:\/\//.test(href)) return;
-    const text = $(el).text().trim();
-    candidates.push({ href, label: text });
+    let absolute;
+    try { absolute = new URL(href, url).toString(); }
+    catch { return; }
+    if (!/^https?:\/\//i.test(absolute)) return;
+    const normalized = absolute.replace(/\/+$/, '');
+    if (!candidateMap.has(normalized)) {
+      candidateMap.set(normalized, { href: normalized, label: (label || '').trim() });
+    }
+  };
+
+  $('.entry-content a[href], .entry-content [data-href], .entry-content [data-url], .entry-content [onclick]').each((_, el) => {
+    const node = $(el);
+    const text = node.text().trim();
+    addCandidate(node.attr('href'), text);
+    addCandidate(node.attr('data-href'), text);
+    addCandidate(node.attr('data-url'), text);
+
+    const onClick = node.attr('onclick') || '';
+    const clickUrl = onClick.match(/https?:\/\/[^\s"'`<>]+/i)
+      || onClick.match(/(?:window\.open|location(?:\.href)?\s*=)\s*['"]([^'"]+)['"]/i);
+    if (clickUrl) addCandidate(clickUrl[1] || clickUrl[0], text);
   });
+  const candidates = Array.from(candidateMap.values());
 
   // Resolve in parallel with a small concurrency cap
   const results = [];
