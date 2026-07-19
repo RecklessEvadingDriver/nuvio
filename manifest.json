@@ -1,13 +1,26 @@
 {
   "name": "our-providers",
   "version": "1.0.0",
-  "providers": [
+  "scrapers": [
     {
-      "id": "moviesmod",
+      "id": "MoviesMod",
       "name": "MoviesMod",
+      "description": "MoviesMod streaming provider",
+      "version": "1.0.0",
+      "author": "RecklessEvadingDriver",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/moviesmod.js",
-      "supportedTypes": ["movie", "tv"],
-      "enabled": true
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "contentLanguage": [
+        "en"
+      ]
     }
   ]
 }
