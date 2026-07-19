@@ -1,5 +1,5 @@
 /**
- * moviesmod — built 2026-07-19T07:22:05.446Z
+ * moviesmod — built 2026-07-19T07:30:31.175Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -249,6 +249,7 @@ var decodeId = (postId) => {
   }
 };
 var encodeUrl = (url) => crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, "");
+var inferType = (text = "") => /\bseason\b|\bepisode\b|\bs\d{1,2}\b|\bseries\b|\btv\b/i.test(text) ? "series" : "movie";
 function getHTML(url) {
   return __async(this, null, function* () {
     const r = yield fetch(url, { headers: HEADERS(url), redirect: "follow" });
@@ -259,25 +260,84 @@ function getHTML(url) {
 }
 function getCatalog() {
   return __async(this, null, function* () {
-    return [
-      { id: "moviesmod-trending", title: "MoviesMod \u2014 Trending", filter: "trending" },
-      { id: "moviesmod-latest", title: "MoviesMod \u2014 Latest", filter: "latest" },
-      { id: "moviesmod-hollywood", title: "MoviesMod \u2014 Hollywood", filter: "?cat=hollywood" },
-      { id: "moviesmod-bollywood", title: "MoviesMod \u2014 Bollywood", filter: "?cat=bollywood" }
+    const cached = get(cache.posts, "catalog");
+    if (cached)
+      return cached;
+    const fallback = [
+      { id: "moviesmod-trending", title: "Trending", filter: "trending", type: "movie" },
+      { id: "moviesmod-latest", title: "Latest", filter: "latest", type: "movie" },
+      { id: "moviesmod-hollywood", title: "Hollywood Movies", filter: "/category/hollywood-movies/", type: "movie" },
+      { id: "moviesmod-bollywood", title: "Bollywood Movies", filter: "/category/bollywood-movies/", type: "movie" }
     ];
+    try {
+      const { html } = yield getHTML(BASE);
+      const $ = cheerio.load(html);
+      const seen = /* @__PURE__ */ new Set();
+      const dynamic = [];
+      $('a[href*="/category/"]').each((_, el) => {
+        const rawHref = $(el).attr("href");
+        const rawTitle = $(el).text().replace(/\s+/g, " ").trim();
+        if (!rawHref || !rawTitle)
+          return;
+        let u;
+        try {
+          u = new URL(rawHref, BASE);
+        } catch (e) {
+          return;
+        }
+        if (!u.pathname.includes("/category/"))
+          return;
+        const filter = u.pathname.endsWith("/") ? u.pathname : `${u.pathname}/`;
+        if (seen.has(filter))
+          return;
+        seen.add(filter);
+        const slug = (u.pathname.split("/").filter(Boolean).pop() || "category").replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+        dynamic.push({
+          id: `moviesmod-${slug}`,
+          title: rawTitle,
+          filter,
+          type: inferType(rawTitle)
+        });
+      });
+      const catalog = [
+        { id: "moviesmod-trending", title: "Trending", filter: "trending", type: "movie" },
+        { id: "moviesmod-latest", title: "Latest", filter: "latest", type: "movie" },
+        ...dynamic
+      ];
+      if (dynamic.length > 0) {
+        set(cache.posts, "catalog", catalog);
+        return catalog;
+      }
+    } catch (_) {
+    }
+    set(cache.posts, "catalog", fallback);
+    return fallback;
   });
 }
-var URL_BUILDERS = {
-  trending: (p) => p > 1 ? `${BASE}/?paged=${p}` : `${BASE}/`,
-  latest: (p) => p > 1 ? `${BASE}/?order=latest&paged=${p}` : `${BASE}/?order=latest`,
-  "?cat=hollywood": (p) => p > 1 ? `${BASE}/category/hollywood-movies/page/${p}/` : `${BASE}/category/hollywood-movies/`,
-  "?cat=bollywood": (p) => p > 1 ? `${BASE}/category/bollywood-movies/page/${p}/` : `${BASE}/category/bollywood-movies/`
-};
+function buildFeedUrl(filter, page) {
+  if (!filter || filter === "trending") {
+    return page > 1 ? `${BASE}/?paged=${page}` : `${BASE}/`;
+  }
+  if (filter === "latest") {
+    return page > 1 ? `${BASE}/?order=latest&paged=${page}` : `${BASE}/?order=latest`;
+  }
+  let u;
+  try {
+    u = new URL(filter, BASE);
+  } catch (e) {
+    return page > 1 ? `${BASE}/?paged=${page}` : `${BASE}/`;
+  }
+  if (u.pathname.includes("/category/")) {
+    const normalized = u.pathname.endsWith("/") ? u.pathname : `${u.pathname}/`;
+    return page > 1 ? `${u.origin}${normalized}page/${page}/` : `${u.origin}${normalized}`;
+  }
+  if (page > 1)
+    u.searchParams.set("paged", String(page));
+  return u.toString();
+}
 function getPosts(filter, page = 1) {
   return __async(this, null, function* () {
-    const key = filter || "trending";
-    const builder = URL_BUILDERS[key] || URL_BUILDERS.trending;
-    const url = builder(page);
+    const url = buildFeedUrl(filter || "trending", page);
     const { html } = yield getHTML(url);
     const $ = cheerio.load(html);
     const posts = [];
@@ -287,18 +347,24 @@ function getPosts(filter, page = 1) {
       const href = a.attr("href");
       if (!href)
         return;
+      let postUrl;
+      try {
+        postUrl = new URL(href, BASE).toString();
+      } catch (e) {
+        return;
+      }
       const title = $(el).find(".entry-title").text().trim() || ((_a = a.attr("title")) == null ? void 0 : _a.trim()) || a.text().trim();
       const poster = $(el).find("img").attr("src") || $(el).find("img").attr("data-src");
       if (!title)
         return;
       posts.push({
-        id: encodeUrl(href),
-        type: "movie",
+        id: encodeUrl(postUrl),
+        type: inferType(title),
         title,
         poster: poster || void 0
       });
     });
-    const hasNext = $('.pagination .next, .nav-links a.next, a[rel="next"]').length > 0 || (key === "trending" || key === "latest") ? page < 50 : page < 50;
+    const hasNext = $('.pagination .next, .nav-links a.next, a[rel="next"]').length > 0;
     return { posts, nextPage: posts.length > 0 && hasNext ? page + 1 : void 0 };
   });
 }
@@ -375,16 +441,35 @@ function getStreams(postId) {
       return [];
     const { html } = yield getHTML(url);
     const $ = cheerio.load(html);
-    const candidates = [];
-    $(".entry-content a[href]").each((_, el) => {
-      const href = $(el).attr("href");
+    const candidateMap = /* @__PURE__ */ new Map();
+    const addCandidate = (href, label) => {
       if (!href)
         return;
-      if (!/^https?:\/\//.test(href))
+      let absolute;
+      try {
+        absolute = new URL(href, url).toString();
+      } catch (e) {
         return;
-      const text = $(el).text().trim();
-      candidates.push({ href, label: text });
+      }
+      if (!/^https?:\/\//i.test(absolute))
+        return;
+      const normalized = absolute.replace(/\/+$/, "");
+      if (!candidateMap.has(normalized)) {
+        candidateMap.set(normalized, { href: normalized, label: (label || "").trim() });
+      }
+    };
+    $(".entry-content a[href], .entry-content [data-href], .entry-content [data-url], .entry-content [onclick]").each((_, el) => {
+      const node = $(el);
+      const text = node.text().trim();
+      addCandidate(node.attr("href"), text);
+      addCandidate(node.attr("data-href"), text);
+      addCandidate(node.attr("data-url"), text);
+      const onClick = node.attr("onclick") || "";
+      const clickUrl = onClick.match(/https?:\/\/[^\s"'`<>]+/i) || onClick.match(/(?:window\.open|location(?:\.href)?\s*=)\s*['"]([^'"]+)['"]/i);
+      if (clickUrl)
+        addCandidate(clickUrl[1] || clickUrl[0], text);
     });
+    const candidates = Array.from(candidateMap.values());
     const results = [];
     const queue = candidates.slice();
     const workers = 6;
