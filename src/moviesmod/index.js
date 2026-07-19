@@ -48,25 +48,86 @@ async function getHTML(url) {
 // ---------- Catalog ----------
 
 async function getCatalog() {
-  return [
-    { id: 'moviesmod-trending',  title: 'MoviesMod — Trending',  filter: 'trending' },
-    { id: 'moviesmod-latest',    title: 'MoviesMod — Latest',    filter: 'latest' },
-    { id: 'moviesmod-hollywood', title: 'MoviesMod — Hollywood', filter: '?cat=hollywood' },
-    { id: 'moviesmod-bollywood', title: 'MoviesMod — Bollywood', filter: '?cat=bollywood' },
+  const cached = get(cache.posts, 'catalog');
+  if (cached) return cached;
+
+  const fallback = [
+    { id: 'moviesmod-trending', title: 'MoviesMod — Trending', filter: 'trending' },
+    { id: 'moviesmod-latest', title: 'MoviesMod — Latest', filter: 'latest' },
+    { id: 'moviesmod-hollywood', title: 'MoviesMod — Hollywood', filter: '/category/hollywood-movies/' },
+    { id: 'moviesmod-bollywood', title: 'MoviesMod — Bollywood', filter: '/category/bollywood-movies/' },
   ];
+
+  try {
+    const { html } = await getHTML(BASE);
+    const $ = cheerio.load(html);
+    const seen = new Set();
+    const dynamic = [];
+
+    $('a[href*="/category/"]').each((_, el) => {
+      const rawHref = $(el).attr('href');
+      const rawTitle = $(el).text().replace(/\s+/g, ' ').trim();
+      if (!rawHref || !rawTitle) return;
+
+      let u;
+      try { u = new URL(rawHref, BASE); }
+      catch { return; }
+
+      if (!u.pathname.includes('/category/')) return;
+      const filter = u.pathname.endsWith('/') ? u.pathname : `${u.pathname}/`;
+      if (seen.has(filter)) return;
+      seen.add(filter);
+
+      const slug = (u.pathname.split('/').filter(Boolean).pop() || 'category')
+        .replace(/[^a-z0-9-]/gi, '-')
+        .toLowerCase();
+
+      dynamic.push({
+        id: `moviesmod-${slug}`,
+        title: `MoviesMod — ${rawTitle}`,
+        filter,
+      });
+    });
+
+    const catalog = [
+      { id: 'moviesmod-trending', title: 'MoviesMod — Trending', filter: 'trending' },
+      { id: 'moviesmod-latest', title: 'MoviesMod — Latest', filter: 'latest' },
+      ...dynamic,
+    ];
+
+    if (dynamic.length > 0) {
+      set(cache.posts, 'catalog', catalog);
+      return catalog;
+    }
+  } catch (_) {}
+
+  set(cache.posts, 'catalog', fallback);
+  return fallback;
 }
 
-const URL_BUILDERS = {
-  trending:        (p) => p > 1 ? `${BASE}/?paged=${p}` : `${BASE}/`,
-  latest:          (p) => p > 1 ? `${BASE}/?order=latest&paged=${p}` : `${BASE}/?order=latest`,
-  '?cat=hollywood':(p) => p > 1 ? `${BASE}/category/hollywood-movies/page/${p}/` : `${BASE}/category/hollywood-movies/`,
-  '?cat=bollywood':(p) => p > 1 ? `${BASE}/category/bollywood-movies/page/${p}/` : `${BASE}/category/bollywood-movies/`,
-};
+function buildFeedUrl(filter, page) {
+  if (!filter || filter === 'trending') {
+    return page > 1 ? `${BASE}/?paged=${page}` : `${BASE}/`;
+  }
+  if (filter === 'latest') {
+    return page > 1 ? `${BASE}/?order=latest&paged=${page}` : `${BASE}/?order=latest`;
+  }
+
+  let u;
+  try { u = new URL(filter, BASE); }
+  catch { return page > 1 ? `${BASE}/?paged=${page}` : `${BASE}/`; }
+
+  if (u.pathname.includes('/category/')) {
+    const normalized = u.pathname.endsWith('/') ? u.pathname : `${u.pathname}/`;
+    return page > 1 ? `${u.origin}${normalized}page/${page}/` : `${u.origin}${normalized}`;
+  }
+
+  if (page > 1) u.searchParams.set('paged', String(page));
+  return u.toString();
+}
 
 async function getPosts(filter, page = 1) {
-  const key = filter || 'trending';
-  const builder = URL_BUILDERS[key] || URL_BUILDERS.trending;
-  const url = builder(page);
+  const url = buildFeedUrl(filter || 'trending', page);
   const { html } = await getHTML(url);
   const $ = cheerio.load(html);
   const posts = [];
@@ -89,8 +150,7 @@ async function getPosts(filter, page = 1) {
     });
   });
 
-  const hasNext = $('.pagination .next, .nav-links a.next, a[rel="next"]').length > 0
-               || (key === 'trending' || key === 'latest') ? page < 50 : page < 50;
+  const hasNext = $('.pagination .next, .nav-links a.next, a[rel="next"]').length > 0;
   return { posts, nextPage: posts.length > 0 && hasNext ? page + 1 : undefined };
 }
 
