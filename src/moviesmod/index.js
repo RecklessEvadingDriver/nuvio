@@ -1,0 +1,216 @@
+/**
+ * moviesmod provider — full chain
+ *
+ *   Nuvio -> getCatalog()       (list of feeds)
+ *         -> getPosts()         (scrape feed, base64-url = postId)
+ *         -> getMeta()          (post page -> metadata)
+ *         -> getStreams()       (post page -> file host links
+ *                                -> resolver chain -> playable url)
+ *
+ * Resolver chain (resolvers/index.js):
+ *   direct file -> pixeldrain -> gdrive -> streamtape
+ *   -> hubcloud -> gdflix/gdtot -> modlinks/unblockedgames
+ */
+
+const cheerio = require('cheerio-without-node-native');
+const crypto = require('crypto-js');
+const { resolveAny, HEADERS } = require('./resolvers');
+
+const BASE = 'https://moviesmod.bond';
+
+const cache = {
+  posts:   new Map(),
+  meta:    new Map(),
+  streams: new Map(),
+  ttl: 5 * 60 * 1000,
+};
+const set = (m, k, v) => m.set(k, { v, t: Date.now() });
+const get = (m, k) => {
+  const e = m.get(k);
+  if (!e) return null;
+  if (Date.now() - e.t > cache.ttl) { m.delete(k); return null; }
+  return e.v;
+};
+
+const decodeId = (postId) => {
+  try { return crypto.enc.Utf8.stringify(crypto.enc.Base64.parse(postId)); }
+  catch { return null; }
+};
+const encodeUrl = (url) =>
+  crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, '');
+
+async function getHTML(url) {
+  const r = await fetch(url, { headers: HEADERS(url), redirect: 'follow' });
+  if (!r.ok) throw new Error(`HTTP ${r.status} on ${url}`);
+  return { html: await r.text(), finalUrl: r.url };
+}
+
+// ---------- Catalog ----------
+
+async function getCatalog() {
+  return [
+    { id: 'moviesmod-trending',  title: 'MoviesMod — Trending',  filter: 'trending' },
+    { id: 'moviesmod-latest',    title: 'MoviesMod — Latest',    filter: 'latest' },
+    { id: 'moviesmod-hollywood', title: 'MoviesMod — Hollywood', filter: '?cat=hollywood' },
+    { id: 'moviesmod-bollywood', title: 'MoviesMod — Bollywood', filter: '?cat=bollywood' },
+  ];
+}
+
+const URL_BUILDERS = {
+  trending:        (p) => p > 1 ? `${BASE}/?paged=${p}` : `${BASE}/`,
+  latest:          (p) => p > 1 ? `${BASE}/?order=latest&paged=${p}` : `${BASE}/?order=latest`,
+  '?cat=hollywood':(p) => p > 1 ? `${BASE}/category/hollywood-movies/page/${p}/` : `${BASE}/category/hollywood-movies/`,
+  '?cat=bollywood':(p) => p > 1 ? `${BASE}/category/bollywood-movies/page/${p}/` : `${BASE}/category/bollywood-movies/`,
+};
+
+async function getPosts(filter, page = 1) {
+  const key = filter || 'trending';
+  const builder = URL_BUILDERS[key] || URL_BUILDERS.trending;
+  const url = builder(page);
+  const { html } = await getHTML(url);
+  const $ = cheerio.load(html);
+  const posts = [];
+
+  $('article').each((_, el) => {
+    const a = $(el).find('a').first();
+    const href = a.attr('href');
+    if (!href) return;
+    const title = $(el).find('.entry-title').text().trim()
+               || a.attr('title')?.trim()
+               || a.text().trim();
+    const poster = $(el).find('img').attr('src')
+                || $(el).find('img').attr('data-src');
+    if (!title) return;
+    posts.push({
+      id: encodeUrl(href),
+      type: 'movie',
+      title,
+      poster: poster || undefined,
+    });
+  });
+
+  const hasNext = $('.pagination .next, .nav-links a.next, a[rel="next"]').length > 0
+               || (key === 'trending' || key === 'latest') ? page < 50 : page < 50;
+  return { posts, nextPage: posts.length > 0 && hasNext ? page + 1 : undefined };
+}
+
+// ---------- Meta ----------
+
+async function getMeta(postId) {
+  const cached = get(cache.meta, postId);
+  if (cached) return cached;
+
+  const url = decodeId(postId);
+  if (!url) throw new Error('bad postId');
+
+  const { html } = await getHTML(url);
+  const $ = cheerio.load(html);
+
+  const title = $('h1.entry-title, h1').first().text().trim()
+             || $('title').text().split('—')[0].trim();
+  const poster = $('meta[property="og:image"]').attr('content')
+              || $('.entry-content img').first().attr('src');
+  const desc  = $('meta[property="og:description"]').attr('content')
+              || $('.entry-content p').first().text().trim();
+  const year  = parseInt(
+    (($('.entry-meta, .date, .entry-date').text() || '').match(/\b(19|20)\d{2}\b/) || [])[0] || '',
+    10,
+  ) || undefined;
+
+  // detect series vs movie — if post has a "Season" section or "Episode" links
+  const isSeries = /\bseason\b|\bepisode\b/i.test($('.entry-content').text() || '');
+  const type = isSeries ? 'series' : 'movie';
+
+  const meta = {
+    id: postId,
+    type,
+    title,
+    poster: poster || undefined,
+    description: desc || undefined,
+    year,
+  };
+  set(cache.meta, postId, meta);
+  return meta;
+}
+
+// ---------- Streams ----------
+
+function extractQuality(label) {
+  const m = label && label.match(/\b(2160p|1080p|720p|480p|360p|4K)\b/i);
+  return m ? m[1].toLowerCase() : 'Auto';
+}
+
+function detectHost(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    if (h.includes('drive.google')) return 'Gdrive';
+    if (h.includes('pixeldrain'))  return 'PixelDrain';
+    if (h.includes('streamtape'))  return 'Streamtape';
+    if (h.includes('hubcloud'))    return 'HubCloud';
+    if (h.includes('hubcdn'))      return 'HubCDN';
+    if (h.includes('hubdrive'))    return 'HubDrive';
+    if (h.includes('gdflix'))      return 'GDFlix';
+    if (h.includes('gdtot'))       return 'GDTot';
+    if (h.includes('modlinks'))    return 'Modlinks';
+    if (/\.(mp4|m3u8|mkv)/.test(url)) return 'Direct';
+    return h.split('.').slice(-2, -1)[0];
+  } catch { return 'Unknown'; }
+}
+
+async function getStreams(postId) {
+  const cached = get(cache.streams, postId);
+  if (cached) return cached;
+
+  const url = decodeId(postId);
+  if (!url) return [];
+  const { html } = await getHTML(url);
+  const $ = cheerio.load(html);
+
+  // Gather every candidate link inside the post body
+  const candidates = [];
+  $('.entry-content a[href]').each((_, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+    if (!/^https?:\/\//.test(href)) return;
+    const text = $(el).text().trim();
+    candidates.push({ href, label: text });
+  });
+
+  // Resolve in parallel with a small concurrency cap
+  const results = [];
+  const queue = candidates.slice();
+  const workers = 6;
+  async function run() {
+    while (queue.length) {
+      const c = queue.shift();
+      try {
+        const r = await resolveAny(c.href);
+        if (r) {
+          const host = detectHost(r.url);
+          const q = extractQuality(c.label);
+          results.push({
+            title: `${c.label || host} — ${host} [${q}]`.replace(/\s+/g, ' ').trim(),
+            url: r.url,
+            quality: q,
+            headers: r.headers || HEADERS(r.url),
+            host,
+          });
+        }
+      } catch (_) { /* dead link, ignore */ }
+    }
+  }
+  await Promise.all(Array.from({ length: workers }, run));
+
+  // Dedup by url
+  const seen = new Set();
+  const streams = results.filter(s => {
+    if (seen.has(s.url)) return false;
+    seen.add(s.url);
+    return true;
+  });
+
+  set(cache.streams, postId, streams);
+  return streams;
+}
+
+module.exports = { getCatalog, getPosts, getMeta, getStreams };

@@ -1,0 +1,19 @@
+{
+  "name": "our-providers",
+  "version": "1.0.0",
+  "description": "Our own streaming providers for Nuvio - starting with moviesmod",
+  "scripts": {
+    "build": "node build.js",
+    "build:provider": "node build.js moviesmod",
+    "build:watch": "nodemon --watch src -e js,json --exec 'node build.js'"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0",
+    "nodemon": "^3.0.0"
+  },
+  "dependencies": {
+    "cheerio-without-node-native": "^0.20.2",
+    "crypto-js": "^4.2.0"
+  },
+  "license": "GPL-3.0"
+}

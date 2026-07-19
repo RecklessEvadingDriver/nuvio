@@ -1,0 +1,12 @@
+{
+  "name": "our-providers",
+  "version": "1.0.0",
+  "description": "Our streaming providers - moviesmod and friends",
+  "providers": [
+    {
+      "id": "moviesmod",
+      "type": "catalog+streams",
+      "file": "providers/moviesmod.js"
+    }
+  ]
+}
