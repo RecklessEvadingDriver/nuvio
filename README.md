@@ -52,7 +52,10 @@ manifest.json                    # provider registry
 |-----------------------|----------------------------------------|
 | `getCatalog()`        | `[{ id, title, filter }]`              |
 | `getPosts(filter, page)` | `{ posts: [...], nextPage? }`        |
-| `getMeta(postId)`     | `{ id, type, title, poster, ... }`     |
-| `getStreams(postId)`  | `[{ title, url, quality, headers }]`   |
+| `getMeta(postIdOrUrl)`     | `{ id, type, title, poster, ... }`     |
+| `getStreams(postIdOrUrl)`  | `[{ title, url, quality, headers }]`   |
 
 All async. Nuvio awaits them.
+
+`postIdOrUrl` can be a base64 `postId`, a direct post URL, or an object containing
+`postId`, `id`, `url`, or `href`.

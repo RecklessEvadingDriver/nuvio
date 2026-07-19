@@ -1,5 +1,5 @@
 /**
- * moviesmod — built 2026-07-19T07:39:36.482Z
+ * moviesmod — built 2026-07-19T07:40:10.594Z
  */
 var __defProp = Object.defineProperty;
 var __defProps = Object.defineProperties;
@@ -249,6 +249,26 @@ var decodeId = (postId) => {
   }
 };
 var encodeUrl = (url) => crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, "");
+var isHttpUrl = (value = "") => /^https?:\/\//i.test((value || "").trim());
+var normalizePostRef = (postRef) => {
+  var _a, _b, _c;
+  if (postRef && typeof postRef === "object") {
+    return normalizePostRef((_c = (_b = (_a = postRef.postId) != null ? _a : postRef.id) != null ? _b : postRef.url) != null ? _c : postRef.href);
+  }
+  const raw = typeof postRef === "string" ? postRef.trim() : "";
+  if (!raw)
+    return { cacheKey: "empty", url: null, id: null };
+  if (isHttpUrl(raw)) {
+    const url = raw.replace(/\/+$/, "");
+    return { cacheKey: `url:${url}`, url, id: encodeUrl(url) };
+  }
+  const decoded = decodeId(raw);
+  if (decoded && isHttpUrl(decoded)) {
+    const url = decoded.replace(/\/+$/, "");
+    return { cacheKey: `id:${raw}`, url, id: raw };
+  }
+  return { cacheKey: `raw:${raw}`, url: null, id: raw };
+};
 var inferType = (text = "") => /\bseason\b|\bepisode\b|\bs\d{1,2}\b|\bseries\b|\btv\b/i.test(text) ? "series" : "movie";
 function getHTML(url) {
   return __async(this, null, function* () {
@@ -368,15 +388,15 @@ function getPosts(filter, page = 1) {
     return { posts, nextPage: posts.length > 0 && hasNext ? page + 1 : void 0 };
   });
 }
-function getMeta(postId) {
+function getMeta(postRef) {
   return __async(this, null, function* () {
-    const cached = get(cache.meta, postId);
+    const ref = normalizePostRef(postRef);
+    const cached = get(cache.meta, ref.cacheKey);
     if (cached)
       return cached;
-    const url = decodeId(postId);
-    if (!url)
+    if (!ref.url)
       throw new Error("bad postId");
-    const { html } = yield getHTML(url);
+    const { html } = yield getHTML(ref.url);
     const $ = cheerio.load(html);
     const title = $("h1.entry-title, h1").first().text().trim() || $("title").text().split("\u2014")[0].trim();
     const poster = $('meta[property="og:image"]').attr("content") || $(".entry-content img").first().attr("src");
@@ -388,14 +408,14 @@ function getMeta(postId) {
     const isSeries = /\bseason\b|\bepisode\b/i.test($(".entry-content").text() || "");
     const type = isSeries ? "series" : "movie";
     const meta = {
-      id: postId,
+      id: ref.id || postRef,
       type,
       title,
       poster: poster || void 0,
       description: desc || void 0,
       year
     };
-    set(cache.meta, postId, meta);
+    set(cache.meta, ref.cacheKey, meta);
     return meta;
   });
 }
@@ -431,15 +451,15 @@ function detectHost(url) {
     return "Unknown";
   }
 }
-function getStreams(postId) {
+function getStreams(postRef) {
   return __async(this, null, function* () {
-    const cached = get(cache.streams, postId);
+    const ref = normalizePostRef(postRef);
+    const cached = get(cache.streams, ref.cacheKey);
     if (cached)
       return cached;
-    const url = decodeId(postId);
-    if (!url)
+    if (!ref.url)
       return [];
-    const { html } = yield getHTML(url);
+    const { html } = yield getHTML(ref.url);
     const $ = cheerio.load(html);
     const candidateMap = /* @__PURE__ */ new Map();
     const addCandidate = (href, label) => {
@@ -447,7 +467,7 @@ function getStreams(postId) {
         return;
       let absolute;
       try {
-        absolute = new URL(href, url).toString();
+        absolute = new URL(href, ref.url).toString();
       } catch (e) {
         return;
       }
@@ -503,7 +523,7 @@ function getStreams(postId) {
       seen.add(s.url);
       return true;
     });
-    set(cache.streams, postId, streams);
+    set(cache.streams, ref.cacheKey, streams);
     return streams;
   });
 }

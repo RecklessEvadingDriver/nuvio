@@ -38,6 +38,28 @@ const decodeId = (postId) => {
 };
 const encodeUrl = (url) =>
   crypto.enc.Base64.stringify(crypto.enc.Utf8.parse(url)).replace(/=+$/, '');
+const isHttpUrl = (value = '') => /^https?:\/\//i.test((value || '').trim());
+const normalizePostRef = (postRef) => {
+  if (postRef && typeof postRef === 'object') {
+    return normalizePostRef(postRef.postId ?? postRef.id ?? postRef.url ?? postRef.href);
+  }
+
+  const raw = typeof postRef === 'string' ? postRef.trim() : '';
+  if (!raw) return { cacheKey: 'empty', url: null, id: null };
+
+  if (isHttpUrl(raw)) {
+    const url = raw.replace(/\/+$/, '');
+    return { cacheKey: `url:${url}`, url, id: encodeUrl(url) };
+  }
+
+  const decoded = decodeId(raw);
+  if (decoded && isHttpUrl(decoded)) {
+    const url = decoded.replace(/\/+$/, '');
+    return { cacheKey: `id:${raw}`, url, id: raw };
+  }
+
+  return { cacheKey: `raw:${raw}`, url: null, id: raw };
+};
 
 const inferType = (text = '') =>
   /\bseason\b|\bepisode\b|\bs\d{1,2}\b|\bseries\b|\btv\b/i.test(text) ? 'series' : 'movie';
@@ -163,14 +185,14 @@ async function getPosts(filter, page = 1) {
 
 // ---------- Meta ----------
 
-async function getMeta(postId) {
-  const cached = get(cache.meta, postId);
+async function getMeta(postRef) {
+  const ref = normalizePostRef(postRef);
+  const cached = get(cache.meta, ref.cacheKey);
   if (cached) return cached;
 
-  const url = decodeId(postId);
-  if (!url) throw new Error('bad postId');
+  if (!ref.url) throw new Error('bad postId');
 
-  const { html } = await getHTML(url);
+  const { html } = await getHTML(ref.url);
   const $ = cheerio.load(html);
 
   const title = $('h1.entry-title, h1').first().text().trim()
@@ -189,14 +211,14 @@ async function getMeta(postId) {
   const type = isSeries ? 'series' : 'movie';
 
   const meta = {
-    id: postId,
+    id: ref.id || postRef,
     type,
     title,
     poster: poster || undefined,
     description: desc || undefined,
     year,
   };
-  set(cache.meta, postId, meta);
+  set(cache.meta, ref.cacheKey, meta);
   return meta;
 }
 
@@ -224,13 +246,13 @@ function detectHost(url) {
   } catch { return 'Unknown'; }
 }
 
-async function getStreams(postId) {
-  const cached = get(cache.streams, postId);
+async function getStreams(postRef) {
+  const ref = normalizePostRef(postRef);
+  const cached = get(cache.streams, ref.cacheKey);
   if (cached) return cached;
 
-  const url = decodeId(postId);
-  if (!url) return [];
-  const { html } = await getHTML(url);
+  if (!ref.url) return [];
+  const { html } = await getHTML(ref.url);
   const $ = cheerio.load(html);
 
   // Gather every candidate link inside the post body
@@ -238,7 +260,7 @@ async function getStreams(postId) {
   const addCandidate = (href, label) => {
     if (!href) return;
     let absolute;
-    try { absolute = new URL(href, url).toString(); }
+    try { absolute = new URL(href, ref.url).toString(); }
     catch { return; }
     if (!/^https?:\/\//i.test(absolute)) return;
     const normalized = absolute.replace(/\/+$/, '');
@@ -294,7 +316,7 @@ async function getStreams(postId) {
     return true;
   });
 
-  set(cache.streams, postId, streams);
+  set(cache.streams, ref.cacheKey, streams);
   return streams;
 }
 
